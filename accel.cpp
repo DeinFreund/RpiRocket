@@ -18,10 +18,8 @@
 #include <ctime>
 #include "mtQuaternions.h"
 
-#define LOG_ACCEL "accel.log"
-#define LOG_ALTI "alti.log"
-#define LOG_GYRO "gyro.log"
-#define LOG_TEMP "temp.log"
+#define LOG_RAW "sensors_raw.log"
+#define LOG_PROCESSED "sensors_processed.log"
 
 // COMPILE USING -std=c++11
 using namespace std;
@@ -62,8 +60,10 @@ int msgEngine = DEFAULT_ENGINE;
 
 double deltaTime;
 
-int flightMode = PRE_LAUNCH;
+int flightMode;
 std::chrono::high_resolution_clock::time_point initTime;
+std::chrono::high_resolution_clock::time_point launchTime;
+std::chrono::high_resolution_clock::time_point calibrationTime;
 
 //calibration data
 double xaccsum = 0;
@@ -87,10 +87,11 @@ struct SensorData {
 	short gyroX, gyroY, gyroZ;
 	short gyroT;
 	int pressP, pressT;
+	double time;
 };
 int sensorQueueIndex = 0;
 const int sensorQueueLength = 32;
-SensorData sensorQueue[sensorQueueLength];
+struct SensorData sensorQueue[sensorQueueLength] = { {0} };
 
 //current sensor data
 std::chrono::high_resolution_clock::time_point lastReadTime;
@@ -107,6 +108,7 @@ double xacc = 0;
 double yacc = 0;
 double zacc = 0;
 double acceleration = 0;
+int errorCount = 0;
 
 //old sensor data
 double oldgyrox, oldgyroy, oldgyroz;
@@ -332,16 +334,12 @@ double altitude(double press){
 	return 44330 * (1 - pow(press/101325, 1/5.255));
 }
 
-FILE * accelFile;
-FILE * gyroFile;
-FILE * altiFile;
-FILE * tempFile;
+FILE * rawFile;
+FILE * processedFile;
 
 void initLog(){
-	accelFile = fopen(LOG_ACCEL, "a");
-	gyroFile = fopen(LOG_GYRO, "a");
-	altiFile = fopen(LOG_ALTI, "a");
-	tempFile = fopen(LOG_TEMP, "a");
+	rawFile = fopen(LOG_RAW, "a");
+	processedFile = fopen(LOG_PROCESSED, "a");
 }
 
 
@@ -419,15 +417,15 @@ void initSensors(){
 	}
 	
 	lastReadTime = getTime();
-	initTime = getTime();
-	lastPrint = getTime();
-	lastMPURead = getTime();
+	initTime = lastReadTime;
+	lastPrint = lastReadTime;
+	lastMPURead = lastReadTime;
 	
 }
 
 
 void finishCalibration(){
-	double dt = ((chrono::duration<double>)(lastReadTime - initTime)).count();
+	double dt = ((chrono::duration<double>)(lastReadTime - calibrationTime)).count();
 	xaccsum /= dt;
 	yaccsum /= dt;
 	zaccsum /= dt;
@@ -483,6 +481,7 @@ void updateFlightMode(SensorData newReadings, SensorData bufferedReadings){
 	
 	if (bufferedReadings.gyroT != 0 && flightMode == INIT){
 		flightMode = CALIBRATION;
+		calibrationTime = lastReadTime;
 		cout << "Entering flight mode: CALIBRATION" << endl;
 	}
 	if (((chrono::duration<double>)(getTime() - initTime)).count() > CALIBRATION_TIME && flightMode == CALIBRATION){
@@ -495,7 +494,13 @@ void updateFlightMode(SensorData newReadings, SensorData bufferedReadings){
 	accely = newReadings.accelY / 2048.0 * accmult;
 	accelz = newReadings.accelZ / 2048.0 * accmult;
 	double totAccel = sqrt(accelx * accelx + accely * accely + accelz * accelz);
-	if (totAccel > 2){
+	//cout << "totAccel is " << totAccel << endl;;
+	if (totAccel > 2 && flightMode < POST_LAUNCH){
+		if (flightMode == CALIBRATION){
+			finishCalibration();
+			cout << "ABORTED CALIBRATION" << endl;
+		}
+		launchTime = getTime();
 		flightMode = POST_LAUNCH;
 		cout << "Entering flight mode: POST_LAUNCH" << endl;
 	}
@@ -515,25 +520,45 @@ void updateSensors(){
 	// Process MPU 6050
 	selectDevice(fd, MPU6050_I2C_ADDR, "MPU6050");
 
+	
 	short interrupt = readByte(fd,0x3A);
 	bool deviceReady = interrupt & 0b00000001 > 0;
 	if (!deviceReady) {
 		cout << "not ready" << endl;
+		errorCount ++;
+		if (errorCount > 5){
+		  cout << "Reinitializing sensors" << endl;
+		  errorCount = 0;
+		  initSensors();
+		}
 		return;
 	}
+	errorCount = 0;
+	
+	auto now = getTime();
+	double time = ((chrono::duration<double>)(getTime() - initTime)).count();
+	deltaTime = ((chrono::duration<double>)(now - lastReadTime)).count();
+	lastReadTime = now;
+	
+	
 	double gyrox, gyroy, gyroz;
-	gyrox = lastReadings.gyroX / 131.0 - xgyrodrift;
-	gyroy = lastReadings.gyroY / 131.0 - ygyrodrift;
-	gyroz = lastReadings.gyroZ / 131.0 - zgyrodrift;
-	fprintf(gyroFile, "%.17g %.17g %.17g\n", gyrox, gyroy, gyroz);
+	gyrox = lastReadings.gyroX / 131.0;
+	gyroy = lastReadings.gyroY / 131.0;
+	gyroz = lastReadings.gyroZ / 131.0;
+	fprintf(rawFile, "%.17g gyro %.17g %.17g %.17g\n", time, gyrox, gyroy, gyroz);
 	gyrox -= xgyrodrift;
 	gyroy -= ygyrodrift;
 	gyroz -= zgyrodrift;
 	
+	
 	double accelx, accely, accelz;
-	accelx = lastReadings.accelX / 2048.0 * accmult;
-	accely = lastReadings.accelY / 2048.0 * accmult;
-	accelz = lastReadings.accelZ / 2048.0 * accmult;
+	accelx = lastReadings.accelX / 2048.0;
+	accely = lastReadings.accelY / 2048.0;
+	accelz = lastReadings.accelZ / 2048.0;
+	fprintf(rawFile, "%.17g accel %.17g %.17g %.17g\n", time, accelx, accely, accelz);
+	accelx *= accmult;
+	accely *= accmult;
+	accelz *= accmult;
 	
 	double temp;
 	temp = lastReadings.gyroT / 340.0 + 36.53;
@@ -545,14 +570,10 @@ void updateSensors(){
 	newReadings.accelY = readShort(fd,0x3d);
 	newReadings.accelZ = readShort(fd,0x3f);
 	newReadings.gyroT = readShort(fd,0x41);
-	
-	
+	newReadings.time = time;
 	
 	acceleration = sqrt(accelx*accelx + accely*accely + accelz* accelz);
 	
-	auto now = getTime();
-	deltaTime = ((chrono::duration<double>)(now - lastReadTime)).count();
-	lastReadTime = now;
 	
 	MTVec3D curX = mtRotatePointWithMTQuaternion(rot, {1,0,0});
 	MTVec3D curY = mtRotatePointWithMTQuaternion(rot, {0,1,0});
@@ -616,15 +637,20 @@ void updateSensors(){
 			cout <<  "bmp085 calibration temperature: " <<  temp2 << endl;
 		}
 	}
+	
 	//if (press > 0) cout << press << " - > " << altitude(press) << endl;
 	//cout << readShort(fd, 0xFA) << " | " << readByte(fd, 0xFC) << endl;
 	//cout << rawtemp << " -> " << (temp2 / 100.0)   << " vs " << temp << endl;
-	if (press > 0) lastAlti = altitude(press) - startAlti;
+	if (press > 0) {
+		lastAlti = altitude(press) - startAlti;
+		fprintf(rawFile, "%.17g temp %.17g %.17g\n", time, temp, temp2);
+		fprintf(rawFile, "%.17g pressalt %.17g %.17g\n", time, press, altitude(press));
+	}
 	
 	sensorQueue[sensorQueueIndex] = newReadings;
 	sensorQueueIndex = (sensorQueueIndex + 1) % sensorQueueLength;
 	
-	updateFlightMode(newReadings, lastReadings);
+		
 		
 	switch (flightMode){
 		case INIT:
@@ -643,6 +669,9 @@ void updateSensors(){
 			break;
 			
 		case POST_LAUNCH:
+		
+			double ptime = ((chrono::duration<double>)(getTime() - launchTime)).count();
+			double mtime = ptime - time + lastReadings.time;
 			//use gyro and acc estimations to get better result
 			MTVec3D acc = mtRotatePointWithMTQuaternion(rot, {accelx, accely, accelz});
 			xacc = acc.x;
@@ -656,6 +685,12 @@ void updateSensors(){
 			double oxvel = xvel;
 			double oyvel = yvel;
 			double ozvel = zvel;
+			
+			if (press > 0) {
+				fprintf(processedFile, "%.17g temp %.17g %.17g\n", mtime, temp, temp2);
+				fprintf(processedFile, "%.17g pressalt %.17g %.17g\n", mtime, press, altitude(press));
+			}
+			
 			xvel += 0.5 * (xacc + oldaccx) * G * deltaTime;
 			yvel += 0.5 * (yacc + oldaccy) * G * deltaTime;
 			zvel += 0.5 * (zacc + oldaccz - 2) * G * deltaTime;
@@ -663,6 +698,13 @@ void updateSensors(){
 			xpos += 0.5 * (oxvel + xvel) * deltaTime;
 			ypos += 0.5 * (oyvel + yvel) * deltaTime;
 			zpos += 0.5 * (ozvel + zvel) * deltaTime;
+			
+			
+			fprintf(processedFile, "%.17g gyro %.17g %.17g %.17g\n", mtime, gyrox, gyroy, gyroz);
+			fprintf(processedFile, "%.17g accel %.17g %.17g %.17g\n", mtime, accelx, accely, accelz);
+			fprintf(processedFile, "%.17g vel %.17g %.17g %.17g\n", mtime, xvel, yvel, zvel);
+			fprintf(processedFile, "%.17g pos %.17g %.17g %.17g\n", mtime, xpos, ypos, zpos);
+			fprintf(processedFile, "%.17g rot %.17g %.17g %.17g %.17g\n", mtime, rot.v.x, rot.v.y, rot.v.z, rot.s);
 			
 			if (((chrono::duration<double>)(now - lastPrint)).count() > 1){
 				MTVec3D euler = mtQuaternionToEuler(&rot);
@@ -685,6 +727,8 @@ void updateSensors(){
 	oldaccx = xacc;
 	oldaccy = yacc;
 	oldaccz = zacc;
+	
+	updateFlightMode(newReadings, lastReadings);
 }
 
 
