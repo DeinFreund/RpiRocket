@@ -17,19 +17,25 @@
 #include <chrono>
 #include <ctime>
 #include "mtQuaternions.h"
+#include <pigpio.h>
 
 #define LOG_RAW "sensors_raw.log"
-#define LOG_PROCESSED "sensors_processed.log"
+#define LOG_PROCESSED "sensors_pro.log"
 
 // COMPILE USING -std=c++11
 using namespace std;
 
 const double G = 9.81;
+const float INIT_BEEP_PERIOD = 1.5;
+const float CALIBRATION_BEEP_PERIOD = 0.5;
+const float PRE_LAUNCH_BEEP_PERIOD = 3;
+const float POST_LAUNCH_BEEP_PERIOD = 0.1;
+const double CALIBRATION_TIME = 60;
+const double INIT_TIME = 90; 
 const int INIT = -1;
 const int CALIBRATION = 0;
 const int PRE_LAUNCH = 1;
 const int POST_LAUNCH = 2;
-const double CALIBRATION_TIME = 10;
 const int HMC5883L_I2C_ADDR = 0x1E;
 const int DEFAULT_PITCH = 5;
 const int DEFAULT_YAW = 0;
@@ -44,7 +50,8 @@ const int BMP280_I2C_ADDR_2 = 0b11101110;
 bool isBMP280 = false;
 const int TIMOUT_CLICKS = 10;
 const double GYRO_WEIGHT = 5; // used for correcting inertial measurement
-const double ALTI_WEIGHT = 0.001;
+const double ALTI_WEIGHT_VEL = 0.002;
+const double ALTI_WEIGHT_POS = 0.05;
 
 double AUTO_PITCH_SENSITIVITY = DEFAULT_PITCH_SENSITIVITY;
 double AUTO_ROLL_SENSITIVITY = DEFAULT_ROLL_SENSITIVITY;
@@ -62,8 +69,9 @@ double deltaTime;
 
 int flightMode;
 std::chrono::high_resolution_clock::time_point initTime;
-std::chrono::high_resolution_clock::time_point launchTime;
 std::chrono::high_resolution_clock::time_point calibrationTime;
+double lastBeepSwitch;
+double launchTime;
 
 //calibration data
 double xaccsum = 0;
@@ -76,7 +84,7 @@ double xgyrodrift = 0;
 double ygyrodrift = 0;
 double zgyrodrift = 0;
 double accmult = 1;
-double startAlti = 0;
+double startAlti = -1;
 //rotation matrix
 double Czx, Czy, Czz, Cyx, Cyy, Cyz, Cxx, Cxy, Cxz;
 
@@ -90,8 +98,15 @@ struct SensorData {
 	double time;
 };
 int sensorQueueIndex = 0;
-const int sensorQueueLength = 32;
+const int sensorQueueLength = 256;
 struct SensorData sensorQueue[sensorQueueLength] = { {0} };
+
+const int integrationBufferLength = 5;
+double positionBuffer[4][integrationBufferLength];
+double velocityBuffer[4][integrationBufferLength];
+double accelerationBuffer[4][integrationBufferLength];
+double timeBuffer[integrationBufferLength];
+
 
 //current sensor data
 std::chrono::high_resolution_clock::time_point lastReadTime;
@@ -101,20 +116,27 @@ MTQuaternion rot;
 double xpos = 0;
 double ypos = 0;
 double zpos = 0;
+double zpos2 = 0;
 double xvel = 0;
 double yvel = 0;
 double zvel = 0;
+double zvel2 = 0;
 double xacc = 0;
 double yacc = 0;
 double zacc = 0;
 double acceleration = 0;
 int errorCount = 0;
+bool beepState = 0;
 
 //old sensor data
 double oldgyrox, oldgyroy, oldgyroz;
 double oldaccx, oldaccy, oldaccz;
+double oldalti = -1;
 int tempCountdown = 10;
 double lastAlti = 0;
+double lastAltiTime = 0;
+double lastAltiDeltaTime = 0;
+double lastAltiSpeed = 0;
 
 int fd;
 
@@ -334,16 +356,56 @@ double altitude(double press){
 	return 44330 * (1 - pow(press/101325, 1/5.255));
 }
 
+double integrate(double (& values)[integrationBufferLength], double (& derivative)[integrationBufferLength], double (& times)[integrationBufferLength], double measurement, double time){
+	double y0 = values[0];
+	double y1 = values[1];
+	double y2 = values[2];
+	double y3 = values[3];
+	double t0 = times[0];
+	double t1 = times[1];
+	double t2 = times[2];
+	double t3 = times[3];
+	double t4 = time;
+	double f0 = derivative[0];
+	double f1 = derivative[1];
+	double f2 = derivative[2];
+	double f3 = derivative[3];
+	double f4 = measurement;
+	
+	//double y5 = y4 + t4 * f4 * 1901 / 720.0 - t3 * f3 * 1387 / 360.0 + t2 * f2 * 109 / 30.0 - t1 * f1 * 637 / 360.0 + t0 * f0 * 251 / 720.0;//adams bashforth
+	double y4 = y3 + t4 * f4 * 251.0 / 720 + t3 * f3 * 646 / 720.0 - t2 * f2 * 264 / 720.0 + t1 * f1 * 106 / 720.0 - t0 * f0 * 19 / 720.0; //adams moulton
+	
+	values[0] = y1;
+	values[1] = y2;
+	values[2] = y3;
+	values[3] = y4;
+	times[0] = t1;
+	times[1] = t2;
+	times[2] = t3;
+	times[3] = t4;
+	derivative[0] = f1;
+	derivative[1] = f2;
+	derivative[2] = f3;
+	derivative[3] = f4;
+	
+	return y4;
+}
+
 FILE * rawFile;
 FILE * processedFile;
 
 void initLog(){
-	rawFile = fopen(LOG_RAW, "a");
 	processedFile = fopen(LOG_PROCESSED, "a");
+	rawFile = fopen(LOG_RAW, "a");
 }
 
 
 void initSensors(){
+	
+	if (gpioInitialise() < 0){
+		cerr << "failed initialising gpio" << endl;
+		gpioWrite(4,0);
+	}
 	
     unsigned char buf[16];
 
@@ -369,6 +431,7 @@ void initSensors(){
 	
 	writeToDevice(fd,0x6b,0x00); // wake up
 	writeToDevice(fd,0x1c,0b00011000); // set accel to +- 16g
+	writeToDevice(fd,0x1b,0b00011000); // set gyro to +- 2000deg
 	writeToDevice(fd,0x1a,0b00000110); // set lowpass to 5hz
 	writeToDevice(fd,0x38,0b00000001); // interrupt data
 	
@@ -435,6 +498,8 @@ void finishCalibration(){
 	xgyrodrift = xgyrosum;
 	ygyrodrift = ygyrosum;
 	zgyrodrift = zgyrosum;
+	
+	fprintf(processedFile, "-42 GYRO_CALIB %.7g %.7g %.7g\n", xgyrodrift, ygyrodrift, zgyrodrift);
 	cout << xaccsum << "|" << yaccsum << "|" << zaccsum  << endl;
 	
 	//double z = -atan2(yaccsum, xaccsum);
@@ -452,7 +517,7 @@ void finishCalibration(){
 	MTQuaternion xcorrect = mtCreateMTQuaternion(mtNormVector3D(mtCrossProduct3D(measured2, target2)), mtAngleVectorVector(measured2, target2));
 	rot = mtMultMTQuaternionMTQuaternion(&xcorrect, &rot);
 	
-	startAlti = lastAlti;
+	startAlti = -1;
 	zpos = 0;
 	/*
 	Cxx = cos(y) * cos(z);
@@ -479,15 +544,17 @@ void finishCalibration(){
 
 void updateFlightMode(SensorData newReadings, SensorData bufferedReadings){
 	
-	if (bufferedReadings.gyroT != 0 && flightMode == INIT){
+	if (bufferedReadings.gyroT != 0 && flightMode == INIT && ((chrono::duration<double>)(getTime() - initTime)).count() > INIT_TIME){
 		flightMode = CALIBRATION;
 		calibrationTime = lastReadTime;
 		cout << "Entering flight mode: CALIBRATION" << endl;
 	}
-	if (((chrono::duration<double>)(getTime() - initTime)).count() > CALIBRATION_TIME && flightMode == CALIBRATION){
+	if (((chrono::duration<double>)(getTime() - initTime)).count() > CALIBRATION_TIME + INIT_TIME && flightMode == CALIBRATION){
 		flightMode = PRE_LAUNCH;
 		finishCalibration();
 		cout << "Entering flight mode: PRE_LAUNCH" << endl;
+		fprintf(processedFile, "-42 CALIBRATED\n");
+		fflush(processedFile);
 	}
 	double accelx, accely, accelz;
 	accelx = newReadings.accelX / 2048.0 * accmult;
@@ -499,8 +566,10 @@ void updateFlightMode(SensorData newReadings, SensorData bufferedReadings){
 		if (flightMode == CALIBRATION){
 			finishCalibration();
 			cout << "ABORTED CALIBRATION" << endl;
+			fprintf(processedFile, "-42 CALIBRATION ABORTED\n");
+			fflush(processedFile);
 		}
-		launchTime = getTime();
+		launchTime = ((chrono::duration<double>)(lastReadTime - initTime)).count();
 		flightMode = POST_LAUNCH;
 		cout << "Entering flight mode: POST_LAUNCH" << endl;
 	}
@@ -542,10 +611,10 @@ void updateSensors(){
 	
 	
 	double gyrox, gyroy, gyroz;
-	gyrox = lastReadings.gyroX / 131.0;
-	gyroy = lastReadings.gyroY / 131.0;
-	gyroz = lastReadings.gyroZ / 131.0;
-	fprintf(rawFile, "%.17g gyro %.17g %.17g %.17g\n", time, gyrox, gyroy, gyroz);
+	gyrox = lastReadings.gyroX / 16.4;
+	gyroy = lastReadings.gyroY / 16.4;
+	gyroz = lastReadings.gyroZ / 16.4;
+	fprintf(rawFile, "%.6g g %.7g %.7g %.7g\n", time, gyrox, gyroy, gyroz);
 	gyrox -= xgyrodrift;
 	gyroy -= ygyrodrift;
 	gyroz -= zgyrodrift;
@@ -555,7 +624,7 @@ void updateSensors(){
 	accelx = lastReadings.accelX / 2048.0;
 	accely = lastReadings.accelY / 2048.0;
 	accelz = lastReadings.accelZ / 2048.0;
-	fprintf(rawFile, "%.17g accel %.17g %.17g %.17g\n", time, accelx, accely, accelz);
+	fprintf(rawFile, "%.6g a %.7g %.7g %.7g\n", time, accelx, accely, accelz);
 	accelx *= accmult;
 	accely *= accmult;
 	accelz *= accmult;
@@ -575,16 +644,6 @@ void updateSensors(){
 	acceleration = sqrt(accelx*accelx + accely*accely + accelz* accelz);
 	
 	
-	MTVec3D curX = mtRotatePointWithMTQuaternion(rot, {1,0,0});
-	MTVec3D curY = mtRotatePointWithMTQuaternion(rot, {0,1,0});
-	MTVec3D curZ = mtRotatePointWithMTQuaternion(rot, {0,0,1});
-	MTQuaternion rotX = mtCreateMTQuaternion(curX, 0.5 * (gyrox + oldgyrox) * M_PI / 180 * deltaTime);
-	MTQuaternion rotY = mtCreateMTQuaternion(curY, 0.5 * (gyroy + oldgyroy) * M_PI / 180 * deltaTime);
-	MTQuaternion rotZ = mtCreateMTQuaternion(curZ, 0.5 * (gyroz + oldgyroz) * M_PI / 180 * deltaTime);
-	rot = mtMultMTQuaternionMTQuaternion(&rotX, &rot);
-	rot = mtMultMTQuaternionMTQuaternion(&rotY, &rot);
-	rot = mtMultMTQuaternionMTQuaternion(&rotZ, &rot);
-	mtNormMTQuaternion(&rot);
 	
 	
 	// Process BMP 280
@@ -634,7 +693,7 @@ void updateSensors(){
 		if (lastReadings.pressT != -1){
 			unsigned int rawtemp = lastReadings.pressT;
 			temp2 = bmp085_temp(rawtemp);
-			cout <<  "bmp085 calibration temperature: " <<  temp2 << endl;
+			//cout <<  "bmp085 calibration temperature: " <<  temp2 << endl;
 		}
 	}
 	
@@ -642,18 +701,25 @@ void updateSensors(){
 	//cout << readShort(fd, 0xFA) << " | " << readByte(fd, 0xFC) << endl;
 	//cout << rawtemp << " -> " << (temp2 / 100.0)   << " vs " << temp << endl;
 	if (press > 0) {
-		lastAlti = altitude(press) - startAlti;
-		fprintf(rawFile, "%.17g temp %.17g %.17g\n", time, temp, temp2);
-		fprintf(rawFile, "%.17g pressalt %.17g %.17g\n", time, press, altitude(press));
+		lastAltiSpeed = altitude(press) - lastAlti;
+		lastAlti = altitude(press);
+		lastAltiDeltaTime = time - lastAltiTime;
+		lastAltiSpeed /= lastAltiDeltaTime;
+		lastAltiTime = time;
+		fprintf(rawFile, "%.6g t %.7g %.7g\n", time, temp, temp2);
+		fprintf(rawFile, "%.6g p %.7g %.7g\n", time, press, altitude(press));
 	}
+	fflush(rawFile);
 	
 	sensorQueue[sensorQueueIndex] = newReadings;
 	sensorQueueIndex = (sensorQueueIndex + 1) % sensorQueueLength;
 	
 		
+	double beepPeriod = 1;
 		
 	switch (flightMode){
 		case INIT:
+			beepPeriod = INIT_BEEP_PERIOD;
 			break;
 		case CALIBRATION:
 			xaccsum += accelx * deltaTime;
@@ -662,51 +728,89 @@ void updateSensors(){
 			xgyrosum += gyrox * deltaTime;
 			ygyrosum += gyroy * deltaTime;
 			zgyrosum += gyroz * deltaTime;
+			beepPeriod = CALIBRATION_BEEP_PERIOD;
 			break;
 			
 		case PRE_LAUNCH:
 		
+			beepPeriod = PRE_LAUNCH_BEEP_PERIOD;
 			break;
 			
 		case POST_LAUNCH:
 		
-			double ptime = ((chrono::duration<double>)(getTime() - launchTime)).count();
-			double mtime = ptime - time + lastReadings.time;
+			//apply rotation
+			MTVec3D curX = mtRotatePointWithMTQuaternion(rot, {1,0,0});
+			MTVec3D curY = mtRotatePointWithMTQuaternion(rot, {0,1,0});
+			MTVec3D curZ = mtRotatePointWithMTQuaternion(rot, {0,0,1});
+			MTQuaternion rotX = mtCreateMTQuaternion(curX, 0.5 * (gyrox + oldgyrox) * M_PI / 180 * deltaTime);
+			MTQuaternion rotY = mtCreateMTQuaternion(curY, 0.5 * (gyroy + oldgyroy) * M_PI / 180 * deltaTime);
+			MTQuaternion rotZ = mtCreateMTQuaternion(curZ, 0.5 * (gyroz + oldgyroz) * M_PI / 180 * deltaTime);
+			rot = mtMultMTQuaternionMTQuaternion(&rotX, &rot);
+			rot = mtMultMTQuaternionMTQuaternion(&rotY, &rot);
+			rot = mtMultMTQuaternionMTQuaternion(&rotZ, &rot);
+			mtNormMTQuaternion(&rot);
+		
+			double mtime = ((chrono::duration<double>)(lastReadings.time - launchTime)).count();
 			//use gyro and acc estimations to get better result
 			MTVec3D acc = mtRotatePointWithMTQuaternion(rot, {accelx, accely, accelz});
 			xacc = acc.x;
 			yacc = acc.y;
-			zacc = acc.z;
+			zacc = acc.z - 1;
 			/*
 			xacc = Cxx * accelx + Cxy * accely + Cxz * accelz;
 			yacc = Cyx * accelx + Cyy * accely + Cyz * accelz;
 			zacc = Czx * accelx + Czy * accely + Czz * accelz;
 			*/
+			
+			if (startAlti < 0) startAlti = lastAlti;
+			
 			double oxvel = xvel;
 			double oyvel = yvel;
 			double ozvel = zvel;
+			double alti = lastAlti - startAlti;
 			
-			if (press > 0) {
-				fprintf(processedFile, "%.17g temp %.17g %.17g\n", mtime, temp, temp2);
-				fprintf(processedFile, "%.17g pressalt %.17g %.17g\n", mtime, press, altitude(press));
-			}
+			if (oldalti < 0) oldalti = alti;
 			
+			double altispeed = lastAltiSpeed;
+			
+			xvel = integrate(velocityBuffer[0], accelerationBuffer[0], timeBuffer, xacc * G, deltaTime);
+			yvel = integrate(velocityBuffer[1], accelerationBuffer[1], timeBuffer, yacc * G, deltaTime);
+			zvel = integrate(velocityBuffer[2], accelerationBuffer[2], timeBuffer, zacc * G, deltaTime);
+			zvel2 = integrate(velocityBuffer[3], accelerationBuffer[3], timeBuffer, zacc * G, deltaTime);
+			
+			zvel = zvel * (1 - ALTI_WEIGHT_VEL) + altispeed * (ALTI_WEIGHT_VEL);
+			
+			xpos = integrate(positionBuffer[0], velocityBuffer[0], timeBuffer, xvel, deltaTime);
+			ypos = integrate(positionBuffer[1], velocityBuffer[1], timeBuffer, yvel, deltaTime);
+			zpos = integrate(positionBuffer[2], velocityBuffer[2], timeBuffer, zvel, deltaTime);
+			zpos2 = integrate(positionBuffer[3], velocityBuffer[3], timeBuffer, zvel2, deltaTime);
+			
+			zpos = zpos * (1 - ALTI_WEIGHT_POS) + alti * (ALTI_WEIGHT_POS);
+			/*
 			xvel += 0.5 * (xacc + oldaccx) * G * deltaTime;
 			yvel += 0.5 * (yacc + oldaccy) * G * deltaTime;
 			zvel += 0.5 * (zacc + oldaccz - 2) * G * deltaTime;
-			zvel = zvel * (1 - ALTI_WEIGHT) + sign(lastAlti - zpos) * pow(abs(lastAlti - zpos), 0.6) * (ALTI_WEIGHT);
 			xpos += 0.5 * (oxvel + xvel) * deltaTime;
 			ypos += 0.5 * (oyvel + yvel) * deltaTime;
-			zpos += 0.5 * (ozvel + zvel) * deltaTime;
+			zpos += 0.5 * (ozvel + zvel) * deltaTime;*/
 			
 			
-			fprintf(processedFile, "%.17g gyro %.17g %.17g %.17g\n", mtime, gyrox, gyroy, gyroz);
-			fprintf(processedFile, "%.17g accel %.17g %.17g %.17g\n", mtime, accelx, accely, accelz);
-			fprintf(processedFile, "%.17g vel %.17g %.17g %.17g\n", mtime, xvel, yvel, zvel);
-			fprintf(processedFile, "%.17g pos %.17g %.17g %.17g\n", mtime, xpos, ypos, zpos);
-			fprintf(processedFile, "%.17g rot %.17g %.17g %.17g %.17g\n", mtime, rot.v.x, rot.v.y, rot.v.z, rot.s);
+			if (press > 0) {
+				fprintf(processedFile, "%.6g t %.7g %.7g\n", mtime, temp, temp2);
+				fprintf(processedFile, "%.6g h %.7g %.7g %.7g\n", mtime, press, alti, altispeed);
+			}
+			//printf("%.6g gyro %.7g %.7g %.7g\n", mtime, gyrox, gyroy, gyroz);
+			fprintf(processedFile, "%.6g g %.7g %.7g %.7g\n", mtime, gyrox, gyroy, gyroz);
+			fprintf(processedFile, "%.6g a %.7g %.7g %.7g\n", mtime, xacc, yacc, zacc);
+			fprintf(processedFile, "%.6g v %.7g %.7g %.7g %.7g\n", mtime, xvel, yvel, zvel, zvel2);
+			fprintf(processedFile, "%.6g p %.7g %.7g %.7g %.7g\n", mtime, xpos, ypos, zpos, zpos2);
+			fprintf(processedFile, "%.6g r %.7g %.7g %.7g %.7g\n", mtime, rot.v.x, rot.v.y, rot.v.z, rot.s);
+			
+			fflush(processedFile);
 			
 			if (((chrono::duration<double>)(now - lastPrint)).count() > 1){
+				fsync(fileno(processedFile));
+				fsync(fileno(rawFile));
 				MTVec3D euler = mtQuaternionToEuler(&rot);
 				euler = mtMultiplyVectorScalar(euler, 180 / M_PI);
 				euler.x = mod(euler.x + 180, 360) - 180;
@@ -718,9 +822,17 @@ void updateSensors(){
 				cout << "dt: " << deltaTime << endl;
 				lastPrint = getTime();
 			}
+			beepPeriod = POST_LAUNCH_BEEP_PERIOD;
 			//usleep(1000000);
+			oldalti = alti;
 			break;
 	}
+	
+	if (time - lastBeepSwitch > beepPeriod){
+		lastBeepSwitch = time;
+		gpioWrite(4, beepState = !beepState);
+	}
+	
 	oldgyrox = gyrox;
 	oldgyroy = gyroy;
 	oldgyroz = gyroz;
