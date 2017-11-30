@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/types.h> 
+#include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <fcntl.h>
@@ -31,7 +31,7 @@ const float CALIBRATION_BEEP_PERIOD = 0.5;
 const float PRE_LAUNCH_BEEP_PERIOD = 3;
 const float POST_LAUNCH_BEEP_PERIOD = 0.1;
 const double CALIBRATION_TIME = 60;
-const double INIT_TIME = 90; 
+const double INIT_TIME = 90;
 const int INIT = -1;
 const int CALIBRATION = 0;
 const int PRE_LAUNCH = 1;
@@ -237,7 +237,7 @@ short readByte(int fd, int reg){
 bool sendping = false;
 char pingval;
 
-	
+
 double avgangle(double a, double b, double fac){
 	a = a * M_PI / 180.0;
 	b = b * M_PI / 180.0;
@@ -318,7 +318,7 @@ double bmp280_press(int adc_P)
 	return ((unsigned int)p) / 256.0;
 }
 double bmp085_temp(unsigned int adc_T)
-{    
+{
 	int ut = adc_T;
     if(ut == 0) return NAN;
     int x1 = ((ut - (int)dig_AC6) * (int)dig_AC5) >> 15;
@@ -371,10 +371,10 @@ double integrate(double (& values)[integrationBufferLength], double (& derivativ
 	double f2 = derivative[2];
 	double f3 = derivative[3];
 	double f4 = measurement;
-	
+
 	//double y5 = y4 + t4 * f4 * 1901 / 720.0 - t3 * f3 * 1387 / 360.0 + t2 * f2 * 109 / 30.0 - t1 * f1 * 637 / 360.0 + t0 * f0 * 251 / 720.0;//adams bashforth
 	double y4 = y3 + t4 * f4 * 251.0 / 720 + t3 * f3 * 646 / 720.0 - t2 * f2 * 264 / 720.0 + t1 * f1 * 106 / 720.0 - t0 * f0 * 19 / 720.0; //adams moulton
-	
+
 	values[0] = y1;
 	values[1] = y2;
 	values[2] = y3;
@@ -387,7 +387,7 @@ double integrate(double (& values)[integrationBufferLength], double (& derivativ
 	derivative[1] = f2;
 	derivative[2] = f3;
 	derivative[3] = f4;
-	
+
 	return y4;
 }
 
@@ -401,12 +401,11 @@ void initLog(){
 
 
 void initSensors(){
-	
-	if (gpioInitialise() < 0){
+
+	if (gpioInitialise() < 0){ // initialise the pins of leds and buzzers (noise one)
 		cerr << "failed initialising gpio" << endl;
-		gpioWrite(4,0);
 	}
-	
+	gpioWrite(4,0);
     unsigned char buf[16];
 
     if ((fd = open("/dev/i2c-1", O_RDWR)) < 0) {
@@ -416,33 +415,35 @@ void initSensors(){
         //return 1;
     }
 
-    /* initialize HMC5883L */
+    // initialize HMC5883L => magnetometer
 
-       selectDevice(fd, HMC5883L_I2C_ADDR, "HMC5883L");
+    selectDevice(fd, HMC5883L_I2C_ADDR, "HMC5883L");
 
     writeToDevice(fd, 0x00, 0x70);
     writeToDevice(fd, 0x01, 0xA0);
     writeToDevice(fd, 0x02, 0x00);
-    
-	
-	//initialize MPU6050
-	
-    selectDevice(fd, MPU6050_I2C_ADDR, "MPU6050");
-	
+
+
+	//initialize MPU6050 => gyroscope and accelerometer
+
+  selectDevice(fd, MPU6050_I2C_ADDR, "MPU6050");
+
 	writeToDevice(fd,0x6b,0x00); // wake up
 	writeToDevice(fd,0x1c,0b00011000); // set accel to +- 16g
 	writeToDevice(fd,0x1b,0b00011000); // set gyro to +- 2000deg
 	writeToDevice(fd,0x1a,0b00000110); // set lowpass to 5hz
 	writeToDevice(fd,0x38,0b00000001); // interrupt data
-	
-    selectDevice(fd, BMP280_I2C_ADDR, "BMP280");
+
+	//initialise BMP280 and bmp085 barometers
+	// detect which sensor of the two is connected
+  selectDevice(fd, BMP280_I2C_ADDR, "BMP280");
 	isBMP280 = readByte(fd, 0xD0) == 0x58;
 	cout << "is bmp280: " << isBMP280 << endl;
-	
+
 	if (isBMP280){
 		writeToDevice(fd,0xf4, 0b10110111); // configure measurements
 		writeToDevice(fd,0xf5, 0b00000000); // configure filters
-		
+
 		dig_T1 = readShortInv(fd, 0x88);//calibration values
 		dig_T2 = readShortInv(fd, 0x8A);
 		dig_T3 = readShortInv(fd, 0x8C);
@@ -455,10 +456,12 @@ void initSensors(){
 		dig_P7 = readShortInv(fd, 0x9A);
 		dig_P8 = readShortInv(fd, 0x9C);
 		dig_P9 = readShortInv(fd, 0x9E);
-		cout << dig_T1 << ", " << dig_T2 << ", " << dig_T3 << ", " << dig_P1 << ", "  << dig_P2 << ", "  << dig_P3 << ", " 
+		cout << dig_T1 << ", " << dig_T2 << ", " << dig_T3 << ", " << dig_P1 << ", "  << dig_P2 << ", "  << dig_P3 << ", "
 				<< dig_P4 << ", "  << dig_P5 << ", "  << dig_P6 << ", "  << dig_P7 << ", "  << dig_P8 << ", "  << dig_P9 << endl;
 	}else{
+		// initialising bmp085 => barometer
 
+		// use calibration constants from the factory
 		dig_AC1 = readShort(fd, 0xAA);
 		dig_AC2 = readShort(fd, 0xAC);
 		dig_AC3 = readShort(fd, 0xAE);
@@ -470,7 +473,7 @@ void initSensors(){
 		dig_MB = readShort(fd, 0xBA);
 		dig_MC = readShort(fd, 0xBC);
 		dig_MD = readShort(fd, 0xBE);
-		
+
 		writeToDevice(fd,0xf4, 0x2e); // measure temp
 		usleep(10000);
 		unsigned int rawtemp = readLong(fd, 0xF6, 2) ;
@@ -478,12 +481,12 @@ void initSensors(){
 		cout <<  "bmp085 calibration temperature: " <<  temp << endl;
 		writeToDevice(fd,0xf4, 0xf4); // configure maximum oversampling
 	}
-	
+
 	lastReadTime = getTime();
 	initTime = lastReadTime;
 	lastPrint = lastReadTime;
 	lastMPURead = lastReadTime;
-	
+
 }
 
 
@@ -498,14 +501,14 @@ void finishCalibration(){
 	xgyrodrift = xgyrosum;
 	ygyrodrift = ygyrosum;
 	zgyrodrift = zgyrosum;
-	
+
 	fprintf(processedFile, "-42 GYRO_CALIB %.7g %.7g %.7g\n", xgyrodrift, ygyrodrift, zgyrodrift);
 	cout << xaccsum << "|" << yaccsum << "|" << zaccsum  << endl;
-	
+
 	//double z = -atan2(yaccsum, xaccsum);
 	//double y = atan2(zaccsum, sqrt(xaccsum * xaccsum + yaccsum * yaccsum));
 	//cout << y << "degs, z: " << z << "degs "  << endl;
-	
+
 	accmult = 1.0 / sqrt(xaccsum * xaccsum + yaccsum * yaccsum + zaccsum * zaccsum);
 	MTVec3D target = mtNormVector3D({0,0,1});
 	MTVec3D measured = mtNormVector3D({xaccsum, yaccsum, zaccsum});
@@ -516,7 +519,7 @@ void finishCalibration(){
 	measured2 = mtNormVector3D(measured2);
 	MTQuaternion xcorrect = mtCreateMTQuaternion(mtNormVector3D(mtCrossProduct3D(measured2, target2)), mtAngleVectorVector(measured2, target2));
 	rot = mtMultMTQuaternionMTQuaternion(&xcorrect, &rot);
-	
+
 	startAlti = -1;
 	zpos = 0;
 	/*
@@ -543,7 +546,7 @@ void finishCalibration(){
 }
 
 void updateFlightMode(SensorData newReadings, SensorData bufferedReadings){
-	
+
 	if (bufferedReadings.gyroT != 0 && flightMode == INIT && ((chrono::duration<double>)(getTime() - initTime)).count() > INIT_TIME){
 		flightMode = CALIBRATION;
 		calibrationTime = lastReadTime;
@@ -577,20 +580,22 @@ void updateFlightMode(SensorData newReadings, SensorData bufferedReadings){
 
 
 void updateSensors(){
-	
-	
+
+
 	SensorData newReadings;
 	newReadings.pressT = -1;
 	newReadings.pressP = -1;
-	
+
 	SensorData lastReadings;
 	lastReadings = sensorQueue[sensorQueueIndex];
-	
-	// Process MPU 6050
+
+	// Process MPU 6050 => gyroscope and accelerometer
 	selectDevice(fd, MPU6050_I2C_ADDR, "MPU6050");
 
-	
-	short interrupt = readByte(fd,0x3A);
+	short interrupt = readByte(fd,0x3A); // is device ready to measure
+
+	// make sure that sensros are initialised all the time
+	// TODO test if each sensor is initialised all the time during the rocket flight
 	bool deviceReady = interrupt & 0b00000001 > 0;
 	if (!deviceReady) {
 		cout << "not ready" << endl;
@@ -602,25 +607,30 @@ void updateSensors(){
 		}
 		return;
 	}
+
 	errorCount = 0;
-	
+
 	auto now = getTime();
 	double time = ((chrono::duration<double>)(getTime() - initTime)).count();
 	deltaTime = ((chrono::duration<double>)(now - lastReadTime)).count();
 	lastReadTime = now;
-	
-	
+
+
 	double gyrox, gyroy, gyroz;
-	gyrox = lastReadings.gyroX / 16.4;
-	gyroy = lastReadings.gyroY / 16.4;
-	gyroz = lastReadings.gyroZ / 16.4;
+	const double magic_number_from_docs = 16.4;
+	gyrox = lastReadings.gyroX / magic_number_from_docs;
+	gyroy = lastReadings.gyroY / magic_number_from_docs;
+	gyroz = lastReadings.gyroZ / magic_number_from_docs;
+
 	fprintf(rawFile, "%.6g g %.7g %.7g %.7g\n", time, gyrox, gyroy, gyroz);
+	// TODO  print correct time in upper line
 	gyrox -= xgyrodrift;
 	gyroy -= ygyrodrift;
 	gyroz -= zgyrodrift;
-	
-	
+
+
 	double accelx, accely, accelz;
+	// TODO fix magic numbers
 	accelx = lastReadings.accelX / 2048.0;
 	accely = lastReadings.accelY / 2048.0;
 	accelz = lastReadings.accelZ / 2048.0;
@@ -628,10 +638,11 @@ void updateSensors(){
 	accelx *= accmult;
 	accely *= accmult;
 	accelz *= accmult;
-	
+
 	double temp;
+	// TODO fix magic numbers
 	temp = lastReadings.gyroT / 340.0 + 36.53;
-	
+
 	newReadings.gyroX = readShort(fd,0x43);
 	newReadings.gyroY = readShort(fd,0x45);
 	newReadings.gyroZ = readShort(fd,0x47);
@@ -640,19 +651,19 @@ void updateSensors(){
 	newReadings.accelZ = readShort(fd,0x3f);
 	newReadings.gyroT = readShort(fd,0x41);
 	newReadings.time = time;
-	
+
 	acceleration = sqrt(accelx*accelx + accely*accely + accelz* accelz);
-	
-	
-	
-	
+
+
+
+
 	// Process BMP 280
     selectDevice(fd, BMP280_I2C_ADDR, "BMP280");
-	
+
 	double temp2 = -1;
 	double press = -1;
-	
-	
+
+
 	if (isBMP280){
 		newReadings.pressT = readLong(fd, 0xFA, 3);
 		newReadings.pressP = readLong(fd, 0xF7, 3);
@@ -674,17 +685,17 @@ void updateSensors(){
 			lastMPURead = now;
 			readed = 1;
 		}
-		
+
 		if (readed){
 			if (tempCountdown == 0){
-				writeToDevice(fd,0xf4, 0x2e); // measure temp	
+				writeToDevice(fd,0xf4, 0x2e); // measure temp
 				//cout << "requesting temp" << endl;
 			}else if (tempCountdown > 0){
 				//cout << "requesting press" << endl;
 				writeToDevice(fd,0xf4, 0xf4); // configure maximum oversampling
 			}
 		}
-		
+
 		if (lastReadings.pressP != -1){
 			unsigned int rawpress = lastReadings.pressP >> 5;
 			press = bmp085_press(rawpress);
@@ -696,7 +707,7 @@ void updateSensors(){
 			//cout <<  "bmp085 calibration temperature: " <<  temp2 << endl;
 		}
 	}
-	
+
 	//if (press > 0) cout << press << " - > " << altitude(press) << endl;
 	//cout << readShort(fd, 0xFA) << " | " << readByte(fd, 0xFC) << endl;
 	//cout << rawtemp << " -> " << (temp2 / 100.0)   << " vs " << temp << endl;
@@ -709,14 +720,14 @@ void updateSensors(){
 		fprintf(rawFile, "%.6g t %.7g %.7g\n", time, temp, temp2);
 		fprintf(rawFile, "%.6g p %.7g %.7g\n", time, press, altitude(press));
 	}
-	fflush(rawFile);
-	
+	fflush(rawFile); // dump data to the operating system
+
 	sensorQueue[sensorQueueIndex] = newReadings;
 	sensorQueueIndex = (sensorQueueIndex + 1) % sensorQueueLength;
-	
-		
+
+
 	double beepPeriod = 1;
-		
+
 	switch (flightMode){
 		case INIT:
 			beepPeriod = INIT_BEEP_PERIOD;
@@ -730,14 +741,14 @@ void updateSensors(){
 			zgyrosum += gyroz * deltaTime;
 			beepPeriod = CALIBRATION_BEEP_PERIOD;
 			break;
-			
+
 		case PRE_LAUNCH:
-		
+
 			beepPeriod = PRE_LAUNCH_BEEP_PERIOD;
 			break;
-			
+
 		case POST_LAUNCH:
-		
+
 			//apply rotation
 			MTVec3D curX = mtRotatePointWithMTQuaternion(rot, {1,0,0});
 			MTVec3D curY = mtRotatePointWithMTQuaternion(rot, {0,1,0});
@@ -749,7 +760,7 @@ void updateSensors(){
 			rot = mtMultMTQuaternionMTQuaternion(&rotY, &rot);
 			rot = mtMultMTQuaternionMTQuaternion(&rotZ, &rot);
 			mtNormMTQuaternion(&rot);
-		
+
 			double mtime = ((chrono::duration<double>)(lastReadings.time - launchTime)).count();
 			//use gyro and acc estimations to get better result
 			MTVec3D acc = mtRotatePointWithMTQuaternion(rot, {accelx, accely, accelz});
@@ -761,30 +772,30 @@ void updateSensors(){
 			yacc = Cyx * accelx + Cyy * accely + Cyz * accelz;
 			zacc = Czx * accelx + Czy * accely + Czz * accelz;
 			*/
-			
+
 			if (startAlti < 0) startAlti = lastAlti;
-			
+
 			double oxvel = xvel;
 			double oyvel = yvel;
 			double ozvel = zvel;
 			double alti = lastAlti - startAlti;
-			
+
 			if (oldalti < 0) oldalti = alti;
-			
+
 			double altispeed = lastAltiSpeed;
-			
+
 			xvel = integrate(velocityBuffer[0], accelerationBuffer[0], timeBuffer, xacc * G, deltaTime);
 			yvel = integrate(velocityBuffer[1], accelerationBuffer[1], timeBuffer, yacc * G, deltaTime);
 			zvel = integrate(velocityBuffer[2], accelerationBuffer[2], timeBuffer, zacc * G, deltaTime);
 			zvel2 = integrate(velocityBuffer[3], accelerationBuffer[3], timeBuffer, zacc * G, deltaTime);
-			
+
 			zvel = zvel * (1 - ALTI_WEIGHT_VEL) + altispeed * (ALTI_WEIGHT_VEL);
-			
+
 			xpos = integrate(positionBuffer[0], velocityBuffer[0], timeBuffer, xvel, deltaTime);
 			ypos = integrate(positionBuffer[1], velocityBuffer[1], timeBuffer, yvel, deltaTime);
 			zpos = integrate(positionBuffer[2], velocityBuffer[2], timeBuffer, zvel, deltaTime);
 			zpos2 = integrate(positionBuffer[3], velocityBuffer[3], timeBuffer, zvel2, deltaTime);
-			
+
 			zpos = zpos * (1 - ALTI_WEIGHT_POS) + alti * (ALTI_WEIGHT_POS);
 			/*
 			xvel += 0.5 * (xacc + oldaccx) * G * deltaTime;
@@ -793,8 +804,8 @@ void updateSensors(){
 			xpos += 0.5 * (oxvel + xvel) * deltaTime;
 			ypos += 0.5 * (oyvel + yvel) * deltaTime;
 			zpos += 0.5 * (ozvel + zvel) * deltaTime;*/
-			
-			
+
+
 			if (press > 0) {
 				fprintf(processedFile, "%.6g t %.7g %.7g\n", mtime, temp, temp2);
 				fprintf(processedFile, "%.6g h %.7g %.7g %.7g\n", mtime, press, alti, altispeed);
@@ -805,11 +816,11 @@ void updateSensors(){
 			fprintf(processedFile, "%.6g v %.7g %.7g %.7g %.7g\n", mtime, xvel, yvel, zvel, zvel2);
 			fprintf(processedFile, "%.6g p %.7g %.7g %.7g %.7g\n", mtime, xpos, ypos, zpos, zpos2);
 			fprintf(processedFile, "%.6g r %.7g %.7g %.7g %.7g\n", mtime, rot.v.x, rot.v.y, rot.v.z, rot.s);
-			
+
 			fflush(processedFile);
-			
+
 			if (((chrono::duration<double>)(now - lastPrint)).count() > 1){
-				fsync(fileno(processedFile));
+				fsync(fileno(processedFile)); // os linux/unix level function that dumps buffer from os memory to hardware
 				fsync(fileno(rawFile));
 				MTVec3D euler = mtQuaternionToEuler(&rot);
 				euler = mtMultiplyVectorScalar(euler, 180 / M_PI);
@@ -827,30 +838,30 @@ void updateSensors(){
 			oldalti = alti;
 			break;
 	}
-	
+
 	if (time - lastBeepSwitch > beepPeriod){
 		lastBeepSwitch = time;
 		gpioWrite(4, beepState = !beepState);
 	}
-	
+
 	oldgyrox = gyrox;
 	oldgyroy = gyroy;
 	oldgyroz = gyroz;
 	oldaccx = xacc;
 	oldaccy = yacc;
 	oldaccz = zacc;
-	
+
 	updateFlightMode(newReadings, lastReadings);
 }
 
 
 int main(int argc, char *argv[]) {
-	
-	initLog();
-	initSensors();
-	flightMode = INIT;
-	
-    while (1) {
+
+	initLog(); // creates and open files for the storing the data obtained and writing
+	initSensors(); // initiate the sensors => set low pass filter, turn them on in such a way that no more set up is needed afterwards
+	flightMode = INIT; // initiate flight
+
+    while (true) {
 		updateSensors();
     }
     return 0;
