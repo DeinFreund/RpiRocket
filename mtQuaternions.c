@@ -21,7 +21,7 @@
 /*
  * Low level operations on MTQuaternions
  */
-MTQuaternion mtCreateMTQuaternion(MTVec3D axis, double angle) {
+MTQuaternion mtCreateMTQuaternion(MTVec3D axis, float angle) {
     MTQuaternion q;
     q.s = cos (angle/2.0);
     q.v = mtMultiplyVectorScalar(axis, sin(angle/2.0));
@@ -51,7 +51,7 @@ MTQuaternion mtMultMTQuaternionMTQuaternion (const MTQuaternion* q1, const MTQua
  * Therefore the scalar will be converted to a MTQuaternion.
  * After that the two MTQuaternions will be muliplied.
  */
-MTQuaternion mtMultMTQuaternionScalar (const MTQuaternion* q1, double s)
+MTQuaternion mtMultMTQuaternionScalar (const MTQuaternion* q1, float s)
 {
     MTQuaternion q2;
 
@@ -100,12 +100,12 @@ MTQuaternion mtConjugateMTQuaternion (const MTQuaternion* q1)
 MTVec3D mtQuaternionToEuler(const MTQuaternion* q)
 {
 	// roll (x-axis rotation)
-	double sinr = +2.0 * (q->s * q->v.x + q->v.y * q->v.z);
-	double cosr = +1.0 - 2.0 * (q->v.x * q->v.x + q->v.y * q->v.y);
+	float sinr = +2.0 * (q->s * q->v.x + q->v.y * q->v.z);
+	float cosr = +1.0 - 2.0 * (q->v.x * q->v.x + q->v.y * q->v.y);
 
 	// pitch (y-axis rotation)
-	double sinp = +2.0 * (q->s * q->v.y - q->v.z * q->v.x);
-	double pitch;
+	float sinp = +2.0 * (q->s * q->v.y - q->v.z * q->v.x);
+	float pitch;
 	if (fabs(sinp) >= 1){
 		pitch = copysign(M_PI / 2, sinp); // use 90 degrees if out of range
 	}
@@ -115,8 +115,8 @@ MTVec3D mtQuaternionToEuler(const MTQuaternion* q)
 	}
 	
 	// yaw (z-axis rotation)
-	double siny = +2.0 * (q->s * q->v.z + q->v.x * q->v.y);
-	double cosy = +1.0 - 2.0 * (q->v.y * q->v.y + q->v.z * q->v.z);
+	float siny = +2.0 * (q->s * q->v.z + q->v.x * q->v.y);
+	float cosy = +1.0 - 2.0 * (q->v.y * q->v.y + q->v.z * q->v.z);
 	
 	return {atan2(sinr, cosr), pitch, atan2(siny, cosy)};
 }
@@ -128,7 +128,7 @@ MTVec3D mtQuaternionToEuler(const MTQuaternion* q)
 MTQuaternion mtInverseMTQuaternion (const MTQuaternion* q1)
 {
     MTQuaternion res;
-    double qlen = pow (mtLengthMTQuaternion (q1), 2);
+    float qlen = pow (mtLengthMTQuaternion (q1), 2);
 
     MTQuaternion tmp = mtConjugateMTQuaternion(q1);
 
@@ -140,7 +140,7 @@ MTQuaternion mtInverseMTQuaternion (const MTQuaternion* q1)
  */
 void mtNormMTQuaternion (MTQuaternion* q1)
 {
-    double qlen = mtLengthMTQuaternion (q1);
+    float qlen = mtLengthMTQuaternion (q1);
 
     q1->s /= qlen;
     q1->v = mtMultiplyVectorScalar(q1->v, 1.0 / qlen);
@@ -149,7 +149,7 @@ void mtNormMTQuaternion (MTQuaternion* q1)
 /**
  * Calculates the length of the MTQuaternion.
  */
-double mtLengthMTQuaternion (const MTQuaternion* q1)
+float mtLengthMTQuaternion (const MTQuaternion* q1)
 {
     return sqrt (q1->s*q1->s + q1->v.x*q1->v.x + q1->v.y*q1->v.y + q1->v.z*q1->v.z);
 }
@@ -159,7 +159,7 @@ double mtLengthMTQuaternion (const MTQuaternion* q1)
  */
 int mtIsNormMTQuaternion (const MTQuaternion* q1)
 {
-    double res = q1->s*q1->s + q1->v.x*q1->v.x + q1->v.y*q1->v.y + q1->v.z*q1->v.z;
+    float res = q1->s*q1->s + q1->v.x*q1->v.x + q1->v.y*q1->v.y + q1->v.z*q1->v.z;
     return (res + EPS >= 1.0) && (res - EPS <= 1.0);
 }
 
@@ -189,7 +189,7 @@ MTVec3D mtRotatePointWithMTQuaternion(MTQuaternion q, MTVec3D point)
  * The rotations uses MTQuaternions internally and writes the rotated (modified)
  * coordinates back to the point.
  */
-MTVec3D mtRotatePointAxis (MTVec3D axis, double angle, MTVec3D point)
+MTVec3D mtRotatePointAxis (MTVec3D axis, float angle, MTVec3D point)
 {
     // create MTQuaternion from axis and angle
     MTQuaternion q;

@@ -11,25 +11,25 @@
 #include <stdarg.h>
 
 typedef struct {
-    double x;
-    double y;
-    double z;
+    float x;
+    float y;
+    float z;
 } MTVec3D;
 
 #define MT_PI 3.14159265
 
-MTVec3D mtToVector3D(double x, double y, double z);
-double mtVectorLength3D(MTVec3D vector);
+MTVec3D mtToVector3D(float x, float y, float z);
+float mtVectorLength3D(MTVec3D vector);
 MTVec3D mtNormVector3D(MTVec3D vector);
 MTVec3D mtCrossProduct3D(MTVec3D a, MTVec3D b);
-MTVec3D mtMultiplyVectorScalar (MTVec3D a, double s);
+MTVec3D mtMultiplyVectorScalar (MTVec3D a, float s);
 MTVec3D mtSubtractVectorVector (MTVec3D a, MTVec3D b);
-MTVec3D mtDivideVectorScalar (MTVec3D a, double s);
+MTVec3D mtDivideVectorScalar (MTVec3D a, float s);
 MTVec3D mtAddVectorVector (MTVec3D a, MTVec3D b);
 void  mtPrintVector (MTVec3D a);
-double mtAngleVectorVector (MTVec3D a, MTVec3D b);
-double mtRadToDeg (double rad);
-double mtDegToRad (double deg);
-double mtScalarProduct (MTVec3D a, MTVec3D b);
+float mtAngleVectorVector (MTVec3D a, MTVec3D b);
+float mtRadToDeg (float rad);
+float mtDegToRad (float deg);
+float mtScalarProduct (MTVec3D a, MTVec3D b);
 
 #endif

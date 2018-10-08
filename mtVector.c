@@ -23,7 +23,7 @@ void mtPrintVector (MTVec3D a)
 /**
  * Creates a new vector from three given values.
  */
-MTVec3D mtToVector3D(double x, double y, double z)
+MTVec3D mtToVector3D(float x, float y, float z)
 {
     MTVec3D res;
     res.x = x;
@@ -35,7 +35,7 @@ MTVec3D mtToVector3D(double x, double y, double z)
 /**
  * Calculates the length of a given vector.
  */
-double mtVectorLength3D(MTVec3D vector)
+float mtVectorLength3D(MTVec3D vector)
 {
   return sqrt((vector.x*vector.x)+
               (vector.y*vector.y)+
@@ -47,7 +47,7 @@ double mtVectorLength3D(MTVec3D vector)
  */
 MTVec3D mtNormVector3D(MTVec3D vector)
 {
-    double l = mtVectorLength3D(vector);
+    float l = mtVectorLength3D(vector);
     if (l >= .00001f)
         return mtToVector3D(vector.x/l, vector.y/l, vector.z/l);
     return vector;
@@ -67,7 +67,7 @@ MTVec3D mtCrossProduct3D(MTVec3D a, MTVec3D b)
 /**
  * Multiplies vector with scalar and returnes new vector.
  */
-MTVec3D mtMultiplyVectorScalar (MTVec3D a, double s)
+MTVec3D mtMultiplyVectorScalar (MTVec3D a, float s)
 {
     MTVec3D res;
     res.x = a.x * s;
@@ -79,7 +79,7 @@ MTVec3D mtMultiplyVectorScalar (MTVec3D a, double s)
 /**
  * Calculates the scalar (outer) product of the given vectors.
  */
-double mtScalarProduct (MTVec3D a, MTVec3D b)
+float mtScalarProduct (MTVec3D a, MTVec3D b)
 {
     return a.x*b.x + a.y*b.y + a.z*b.z;
 }
@@ -99,7 +99,7 @@ MTVec3D mtSubtractVectorVector (MTVec3D a, MTVec3D b)
 /**
  * Divides all values of the vector by s and returnes new vector.
  */
-MTVec3D mtDivideVectorScalar (MTVec3D a, double s)
+MTVec3D mtDivideVectorScalar (MTVec3D a, float s)
 {
     return mtMultiplyVectorScalar(a, 1.0/s);
 }
@@ -119,7 +119,7 @@ MTVec3D mtAddVectorVector (MTVec3D a, MTVec3D b)
 /**
  * Converts degree into radiant. Degree must be in the range of 0..359.
  */
-double mtDegToRad (double deg)
+float mtDegToRad (float deg)
 {
     return deg*MT_PI/180.0;
 }
@@ -127,7 +127,7 @@ double mtDegToRad (double deg)
 /**
  * Converts radiant to degree.
  */
-double mtRadToDeg (double rad)
+float mtRadToDeg (float rad)
 {
     return rad*180.0/MT_PI;
 }
@@ -135,7 +135,7 @@ double mtRadToDeg (double rad)
 /**
  * Calculates the angle between two vectors (not radiant!).
  */
-double mtAngleVectorVector (MTVec3D a, MTVec3D b)
+float mtAngleVectorVector (MTVec3D a, MTVec3D b)
 {
     return (acos (mtScalarProduct(a, b) / (mtVectorLength3D(a)*mtVectorLength3D(b))));
 }
